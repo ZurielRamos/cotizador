@@ -1,4 +1,4 @@
-import { Bell, Calculator, Search, Settings } from 'lucide-react';
+import { Bell, Calculator, Settings } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 
@@ -10,15 +10,6 @@ function TopNav() {
           <Calculator className="size-4" />
         </span>
         <span className="text-lg">Cotizador 3000</span>
-      </div>
-
-      <div className="relative ml-4 hidden max-w-md flex-1 md:block">
-        <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <input
-          type="search"
-          placeholder="Buscar..."
-          className="h-9 w-full rounded-full border bg-muted/40 pl-9 pr-4 text-sm outline-none focus:ring-2 focus:ring-ring"
-        />
       </div>
 
       <div className="ml-auto flex items-center gap-2">

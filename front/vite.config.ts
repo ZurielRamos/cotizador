@@ -16,5 +16,14 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // En desarrollo, reenviar las llamadas /api al backend Nest (:3000).
+    // Así el frontend usa la misma ruta relativa /api que en producción,
+    // donde Nest sirve el SPA y la API bajo el mismo origen.
+    proxy: {
+      '/api': {
+        target: process.env.VITE_DEV_API_TARGET ?? 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
   },
 });
