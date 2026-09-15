@@ -1,0 +1,29 @@
+# Dependencias y builds (se generan dentro de la imagen)
+**/node_modules
+**/dist
+**/dist-ssr
+*.tsbuildinfo
+
+# Secretos: nunca copiar .env al contexto de build.
+# El .env.production del frontend SI se necesita (solo VITE_API_URL=/api).
+**/.env
+**/.env.local
+**/.env.*.local
+!front/.env.production
+
+# Git y metadatos
+.git
+.gitignore
+**/.gitignore
+
+# Logs
+**/*.log
+logs
+
+# OS / editor
+**/.DS_Store
+.idea
+.vscode
+
+# Docs / infra que no afectan al build
+README.md

@@ -66,11 +66,19 @@ export class EvolutionInstancesService {
     private readonly lockRepo: Repository<InstanceLock>,
   ) {}
 
-  /** URL pública del backend donde Evolution enviará los webhooks, o null. */
+  /**
+   * URL pública del backend donde Evolution enviará los webhooks, o null.
+   *
+   * La API vive bajo el prefijo global `/api`, así que la ruta real del
+   * webhook es `/api/evolution/webhook`. `PUBLIC_API_URL` solo necesita el
+   * dominio base (con o sin `/api` al final): se normaliza aquí.
+   */
   private webhookUrl(): string | null {
     const base = this.config.get<string>('PUBLIC_API_URL');
     if (!base) return null;
-    return `${base.replace(/\/+$/, '')}/evolution/webhook`;
+    const trimmed = base.replace(/\/+$/, '');
+    const withPrefix = trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`;
+    return `${withPrefix}/evolution/webhook`;
   }
 
   /** Conjunto de nombres de instancias bloqueadas. */

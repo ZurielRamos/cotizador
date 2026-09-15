@@ -11,6 +11,9 @@ dist-ssr/
 .env.local
 .env.*.local
 *.local
+# El .env.production del frontend NO tiene secretos (solo VITE_API_URL=/api)
+# y es necesario para el build de producción, por eso se versiona.
+!front/.env.production
 
 # Logs
 logs
