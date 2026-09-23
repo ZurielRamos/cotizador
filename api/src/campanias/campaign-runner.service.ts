@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, IsNull, MoreThan, Not, Repository } from 'typeorm';
 import { ChatwootService } from '../evolution/chatwoot.service.js';
 import { EvolutionInstancesService } from '../evolution/evolution-instances.service.js';
 import { Plantilla } from '../plantillas/entities/plantilla.entity.js';
@@ -12,6 +12,29 @@ import { Campaign } from './entities/campaign.entity.js';
 
 /** Espera entre pasos (mensajes) de una misma plantilla, en ms. */
 const STEP_DELAY_MS = 4000;
+
+/** Máximo de intentos por target antes de marcarlo como fallido definitivo. */
+const MAX_INTENTOS = 3;
+
+/**
+ * ¿El error de envío es transitorio (del dispositivo/sesión) y no del
+ * destinatario? Estos casos conviene reintentarlos con otro dispositivo en
+ * vez de marcar el target como fallido. Evolution reporta la sesión "open"
+ * aunque WhatsApp esté caído y responde "Connection Closed" al enviar.
+ */
+function esErrorTransitorio(mensaje: string): boolean {
+  const m = mensaje.toLowerCase();
+  return (
+    m.includes('connection closed') ||
+    m.includes('connection lost') ||
+    m.includes('timed out') ||
+    m.includes('timeout') ||
+    m.includes('econnreset') ||
+    m.includes('socket') ||
+    m.includes('no se pudo contactar a evolution') ||
+    m.includes('internal server error')
+  );
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -58,6 +81,9 @@ export class CampaignRunnerService {
     this.running = true;
     try {
       await this.processCampaigns();
+      // La conversación de Chatwoot se crea de forma asíncrona tras el envío;
+      // reintentar aquí rellena el id para los que aún no lo tienen.
+      await this.resolverConversacionesPendientes();
     } catch (e) {
       this.logger.error(
         `Error en el tick de campañas: ${
@@ -108,6 +134,44 @@ export class CampaignRunnerService {
         const device = disponibles.shift();
         if (!device) break;
         await this.enviarTarget(target, device, plantillaCache);
+      }
+    }
+  }
+
+  /**
+   * Rellena el id de conversación de Chatwoot para targets ya enviados que
+   * aún no lo tienen. La conversación la crea la integración Evolution→Chatwoot
+   * de forma asíncrona, así que justo tras el envío puede no existir todavía;
+   * aquí se reintenta en ticks posteriores. Solo mira envíos recientes (24h)
+   * para no consultar indefinidamente los que nunca tendrán conversación.
+   */
+  private async resolverConversacionesPendientes(): Promise<void> {
+    const desde = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const pendientes = await this.targetRepo.find({
+      where: {
+        estado: 'sent',
+        chatwootConversationId: IsNull(),
+        instanceName: Not(IsNull()),
+        enviadoEn: MoreThan(desde),
+      },
+      take: 25,
+      order: { enviadoEn: 'DESC' },
+    });
+    if (pendientes.length === 0) return;
+
+    for (const target of pendientes) {
+      if (!target.instanceName) continue;
+      try {
+        const convId = await this.chatwoot.resolveConversationId(
+          target.numero,
+          target.instanceName,
+        );
+        if (convId != null) {
+          target.chatwootConversationId = convId;
+          await this.targetRepo.save(target);
+        }
+      } catch {
+        // Best-effort: se reintenta en el próximo tick.
       }
     }
   }
@@ -203,9 +267,24 @@ export class CampaignRunnerService {
       plantilla.ultimoUsoEn = new Date();
       await this.plantillaRepo.save(plantilla);
     } catch (e) {
-      target.estado = 'failed';
-      target.ultimoError =
+      const mensaje =
         e instanceof Error ? e.message : 'Error de envío desconocido';
+
+      // Fallos transitorios del dispositivo (sesión de WhatsApp caída aunque
+      // Evolution la reporte "open"): no es culpa del destinatario. Devolver
+      // el target a la cola para reintentar con otro dispositivo, hasta agotar
+      // MAX_INTENTOS. Solo tras agotarlos se marca 'failed'.
+      if (esErrorTransitorio(mensaje) && target.intentos < MAX_INTENTOS) {
+        target.estado = 'pending';
+        target.instanceName = null;
+        target.ultimoError = mensaje;
+        await this.targetRepo.save(target);
+        await this.reputation.registerFailed(instanceName);
+        return;
+      }
+
+      target.estado = 'failed';
+      target.ultimoError = mensaje;
       await this.targetRepo.save(target);
       await this.reputation.registerFailed(instanceName);
     }

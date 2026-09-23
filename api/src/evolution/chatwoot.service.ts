@@ -163,9 +163,8 @@ export class ChatwootService {
     if (!creds) return null;
     const acc = encodeURIComponent(creds.accountId);
 
-    // Inbox del dispositivo: sin ella no podemos garantizar la conversación.
+    // Inbox del dispositivo (preferida). Puede ser null si aún no se resuelve.
     const inboxId = await this.inboxIdForInstance(creds, instanceName);
-    if (inboxId == null) return null;
 
     // 1) Buscar el contacto por número.
     const search = await this.apiGet<{
@@ -177,7 +176,7 @@ export class ChatwootService {
     const contactId = search?.payload?.[0]?.id;
     if (!contactId) return null;
 
-    // 2) Conversaciones del contacto, filtrando por la inbox del dispositivo.
+    // 2) Conversaciones del contacto.
     const convs = await this.apiGet<{
       payload?: Array<{
         id?: number;
@@ -186,16 +185,30 @@ export class ChatwootService {
       }>;
     }>(creds, `/api/v1/accounts/${acc}/contacts/${contactId}/conversations`);
 
-    const enInbox = (convs?.payload ?? []).filter(
-      (c) => c.inbox_id === inboxId && typeof c.id === 'number',
+    const todas = (convs?.payload ?? []).filter(
+      (c) => typeof c.id === 'number',
     );
-    if (enInbox.length === 0) return null;
+    if (todas.length === 0) return null;
 
-    // La más reciente de esa inbox (por actividad; fallback al id mayor).
-    enInbox.sort(
-      (a, b) =>
-        (b.last_activity_at ?? b.id ?? 0) - (a.last_activity_at ?? a.id ?? 0),
-    );
-    return enInbox[0].id ?? null;
+    const masReciente = (
+      list: Array<{ id?: number; last_activity_at?: number }>,
+    ): number | null => {
+      const ordenadas = [...list].sort(
+        (a, b) =>
+          (b.last_activity_at ?? b.id ?? 0) - (a.last_activity_at ?? a.id ?? 0),
+      );
+      return ordenadas[0]?.id ?? null;
+    };
+
+    // Preferir la conversación en la inbox del dispositivo que envió.
+    if (inboxId != null) {
+      const enInbox = todas.filter((c) => c.inbox_id === inboxId);
+      if (enInbox.length > 0) return masReciente(enInbox);
+    }
+
+    // Fallback: el envío pudo salir por otro dispositivo (reintento/re-ruteo),
+    // por lo que la conversación puede estar en otra inbox. Asociar la más
+    // reciente del contacto es mejor que dejar el registro sin conversación.
+    return masReciente(todas);
   }
 }

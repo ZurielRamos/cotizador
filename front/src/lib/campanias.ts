@@ -45,6 +45,9 @@ export type TargetByNumero = Record<
     chatwootConversationId: number | null;
     respondido: boolean;
     cotizacion: boolean;
+    ultimoError: string | null;
+    intentos: number;
+    enviadoEn: string | null;
   }
 >;
 

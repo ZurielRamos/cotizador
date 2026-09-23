@@ -48,6 +48,29 @@ function soloDigitos(tel: string | null): string {
   return (tel ?? '').replace(/\D/g, '');
 }
 
+/** Etiqueta + variante de badge para el estado de envío de un target. */
+function resultadoBadge(estado: string | undefined): {
+  label: string;
+  variant: 'default' | 'active' | 'destructive' | 'executed';
+} | null {
+  switch (estado) {
+    case 'sent':
+      return { label: 'Enviado', variant: 'active' };
+    case 'failed':
+      return { label: 'Fallido', variant: 'destructive' };
+    case 'sending':
+      return { label: 'Enviando', variant: 'default' };
+    case 'pending':
+      return { label: 'En cola', variant: 'default' };
+    case 'queued':
+      return { label: 'Sin lanzar', variant: 'executed' };
+    case 'skipped':
+      return { label: 'Omitido', variant: 'executed' };
+    default:
+      return null;
+  }
+}
+
 /** Agrupa municipios por departamento y calcula totales por departamento. */
 type Departamento = {
   nombre: string;
@@ -445,6 +468,7 @@ function ProgramacionDetallePage() {
                           <TableHead>Nombre</TableHead>
                           <TableHead>ID Depósito</TableHead>
                           <TableHead>Teléfono</TableHead>
+                          <TableHead>Resultado</TableHead>
                           <TableHead>Chatwoot</TableHead>
                           <TableHead>Respondió</TableHead>
                           <TableHead>Cotización</TableHead>
@@ -471,6 +495,34 @@ function ProgramacionDetallePage() {
                               ) : (
                                 '—'
                               )}
+                            </TableCell>
+                            <TableCell>
+                              {(() => {
+                                const badge = resultadoBadge(t?.estado);
+                                if (!badge) {
+                                  return (
+                                    <span className="text-muted-foreground">
+                                      —
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <div className="flex flex-col gap-0.5">
+                                    <Badge variant={badge.variant}>
+                                      {badge.label}
+                                    </Badge>
+                                    {t?.estado === 'failed' &&
+                                    t?.ultimoError ? (
+                                      <span
+                                        className="max-w-[200px] truncate text-xs text-destructive"
+                                        title={t.ultimoError}
+                                      >
+                                        {t.ultimoError}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                );
+                              })()}
                             </TableCell>
                             <TableCell>
                               {(() => {

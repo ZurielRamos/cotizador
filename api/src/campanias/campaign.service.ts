@@ -308,9 +308,10 @@ export class CampaignService {
   }
 
   /**
-   * Estado por número de la campaña más reciente de una programación:
-   * { [numero]: { estado, chatwootConversationId, respondido } }.
-   * Para casar con los depósitos en la UI del detalle.
+   * Estado por número de la campaña más reciente de una programación, para
+   * casar con los depósitos en la UI del detalle. Incluye el resultado del
+   * envío (estado), el motivo del fallo (ultimoError), intentos y la fecha de
+   * envío, además del id de conversación de Chatwoot.
    */
   async targetsPorProgramacion(programacionId: number): Promise<
     Record<
@@ -319,6 +320,10 @@ export class CampaignService {
         estado: string;
         chatwootConversationId: number | null;
         respondido: boolean;
+        cotizacion: boolean;
+        ultimoError: string | null;
+        intentos: number;
+        enviadoEn: Date | null;
       }
     >
   > {
@@ -334,6 +339,9 @@ export class CampaignService {
         chatwootConversationId: number | null;
         respondido: boolean;
         cotizacion: boolean;
+        ultimoError: string | null;
+        intentos: number;
+        enviadoEn: Date | null;
       }
     > = {};
     for (const t of targets) {
@@ -342,6 +350,9 @@ export class CampaignService {
         chatwootConversationId: t.chatwootConversationId,
         respondido: t.respondido,
         cotizacion: t.cotizacion,
+        ultimoError: t.ultimoError,
+        intentos: t.intentos,
+        enviadoEn: t.enviadoEn,
       };
     }
     return map;

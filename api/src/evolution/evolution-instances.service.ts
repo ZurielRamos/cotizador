@@ -12,6 +12,39 @@ import { CreateInstanceDto } from './dto/create-instance.dto.js';
 import { InstanceLock } from './entities/instance-lock.entity.js';
 import { EvolutionService } from './evolution.service.js';
 
+/**
+ * Extrae un mensaje de error legible de la respuesta de Evolution API.
+ * Evolution anida el detalle útil de varias formas, p. ej.:
+ *   { status, error: "Bad Request", response: { message: ["Connection Closed"] } }
+ *   { status, error: "Internal Server Error", response: { message: "Connection Closed" } }
+ * Preferimos el mensaje anidado (la causa real) sobre el `error` genérico.
+ */
+function extractEvolutionError(body: unknown, status: number): string {
+  const flatten = (v: unknown): string | null => {
+    if (v == null) return null;
+    if (typeof v === 'string') return v;
+    if (Array.isArray(v)) {
+      const parts = v.map(flatten).filter(Boolean) as string[];
+      return parts.length ? parts.join('; ') : null;
+    }
+    if (typeof v === 'object') {
+      const o = v as Record<string, unknown>;
+      // response.message suele traer el detalle real del fallo.
+      const nested =
+        flatten((o.response as Record<string, unknown>)?.message) ??
+        flatten(o.message) ??
+        flatten(o.error);
+      return nested;
+    }
+    return null;
+  };
+
+  const detail = flatten(body);
+  return detail && detail.trim()
+    ? detail
+    : `Evolution API respondió ${status}`;
+}
+
 /** Estado de conexión normalizado. */
 export type EstadoConexion = 'open' | 'connecting' | 'close';
 
@@ -153,16 +186,16 @@ export class EvolutionInstancesService {
     }
 
     const text = await res.text();
-    const body: unknown = text ? JSON.parse(text) : null;
+    let body: unknown = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      // Respuesta no-JSON: conservar el texto crudo para el mensaje de error.
+      body = text || null;
+    }
 
     if (!res.ok) {
-      const message =
-        (body as { message?: unknown; error?: unknown })?.message ??
-        (body as { error?: unknown })?.error ??
-        `Evolution API respondió ${res.status}`;
-      throw new BadGatewayException(
-        typeof message === 'string' ? message : JSON.stringify(message),
-      );
+      throw new BadGatewayException(extractEvolutionError(body, res.status));
     }
 
     return body as T;
