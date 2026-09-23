@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, MoreThan, Not, Repository } from 'typeorm';
+import { In, IsNull, LessThan, MoreThan, Not, Repository } from 'typeorm';
 import { ChatwootService } from '../evolution/chatwoot.service.js';
 import { EvolutionInstancesService } from '../evolution/evolution-instances.service.js';
 import { Plantilla } from '../plantillas/entities/plantilla.entity.js';
@@ -15,6 +15,12 @@ const STEP_DELAY_MS = 4000;
 
 /** Máximo de intentos por target antes de marcarlo como fallido definitivo. */
 const MAX_INTENTOS = 3;
+
+/**
+ * Tiempo tras el cual un target en 'sending' se considera colgado (el proceso
+ * murió/reinició a mitad de envío) y se devuelve a la cola. En ms.
+ */
+const SENDING_STUCK_MS = 5 * 60 * 1000;
 
 /**
  * ¿El error de envío es transitorio (del dispositivo/sesión) y no del
@@ -96,6 +102,10 @@ export class CampaignRunnerService {
   }
 
   private async processCampaigns(): Promise<void> {
+    // Rescatar targets colgados en 'sending' (p. ej. el proceso se reinició a
+    // mitad de un envío): vuelven a la cola para reintentarse.
+    await this.recuperarEnviosColgados();
+
     const activas = await this.campaignRepo.find({
       where: { estado: 'running' },
     });
@@ -139,6 +149,31 @@ export class CampaignRunnerService {
   }
 
   /**
+   * Devuelve a la cola ('pending') los targets que llevan demasiado tiempo en
+   * 'sending'. Eso ocurre cuando el proceso se reinicia mientras enviaba: el
+   * target queda huérfano y, como el runner solo toma 'pending', nunca se
+   * reintentaría. Si ya agotó los intentos, se marca 'failed'.
+   */
+  private async recuperarEnviosColgados(): Promise<void> {
+    const limite = new Date(Date.now() - SENDING_STUCK_MS);
+    const colgados = await this.targetRepo.find({
+      where: { estado: 'sending', actualizadoEn: LessThan(limite) },
+      take: 100,
+    });
+    for (const target of colgados) {
+      if (target.intentos >= MAX_INTENTOS) {
+        target.estado = 'failed';
+        target.ultimoError =
+          target.ultimoError ?? 'Envío interrumpido (proceso reiniciado)';
+      } else {
+        target.estado = 'pending';
+        target.instanceName = null;
+      }
+      await this.targetRepo.save(target);
+    }
+  }
+
+  /**
    * Rellena el id de conversación de Chatwoot para targets ya enviados que
    * aún no lo tienen. La conversación la crea la integración Evolution→Chatwoot
    * de forma asíncrona, así que justo tras el envío puede no existir todavía;
@@ -169,6 +204,8 @@ export class CampaignRunnerService {
         if (convId != null) {
           target.chatwootConversationId = convId;
           await this.targetRepo.save(target);
+          // Al aparecer la conversación, asegurar los atributos del contacto.
+          await this.aplicarAtributosChatwoot(target);
         }
       } catch {
         // Best-effort: se reintenta en el próximo tick.
@@ -197,6 +234,25 @@ export class CampaignRunnerService {
     const p = await this.plantillaRepo.findOne({ where: { id } });
     if (p) cache.set(id, p);
     return p;
+  }
+
+  /**
+   * Setea en el contacto de Chatwoot los atributos personalizados con los
+   * datos del target (departamento, municipio, nombre del depósito). Las keys
+   * coinciden con los atributos configurados en Chatwoot. Best-effort.
+   */
+  private async aplicarAtributosChatwoot(
+    target: CampaignTarget,
+  ): Promise<void> {
+    try {
+      await this.chatwoot.setContactCustomAttributes(target.numero, {
+        departamento: target.departamento,
+        municipio: target.municipio,
+        nombre_deposito: target.nombreDeposito,
+      });
+    } catch {
+      // Ignorado: se puede reintentar en la resolución diferida.
+    }
   }
 
   /**
@@ -258,6 +314,10 @@ export class CampaignRunnerService {
       } catch {
         // Ignorado: la conversación se puede resolver luego.
       }
+
+      // Poblar atributos del contacto en Chatwoot (departamento, municipio,
+      // nombre del depósito). Best-effort, no bloquea el envío.
+      await this.aplicarAtributosChatwoot(target);
 
       await this.targetRepo.save(target);
 

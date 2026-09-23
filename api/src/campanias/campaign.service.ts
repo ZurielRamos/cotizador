@@ -232,7 +232,15 @@ export class CampaignService {
    */
   private async destinatariosDeProgramacion(
     programacionId: number,
-  ): Promise<Array<{ numero: string; municipio: string; requerido: number }>> {
+  ): Promise<
+    Array<{
+      numero: string;
+      municipio: string;
+      departamento: string;
+      nombreDeposito: string | null;
+      requerido: number;
+    }>
+  > {
     const prog = await this.programacionRepo.findOne({
       where: { id: programacionId },
       relations: { municipios: { depositos: true } },
@@ -246,6 +254,8 @@ export class CampaignService {
     const result: Array<{
       numero: string;
       municipio: string;
+      departamento: string;
+      nombreDeposito: string | null;
       requerido: number;
     }> = [];
     for (const m of prog.municipios) {
@@ -257,6 +267,8 @@ export class CampaignService {
         result.push({
           numero,
           municipio: m.municipio,
+          departamento: m.departamento,
+          nombreDeposito: d.nombre,
           requerido: m.requerido,
         });
       }
@@ -408,7 +420,8 @@ export class CampaignService {
         `La programación ${programacionId} no tiene campaña.`,
       );
     }
-    const numeroNorm = numero.replace(/\D/g, '');
+    // Normaliza igual que al crear los targets (con código país) para casar.
+    const numeroNorm = normalizeNumero(numero);
     const target = await this.targetRepo.findOne({
       where: { campaign: { id: campaign.id }, numero: numeroNorm },
     });
@@ -554,6 +567,8 @@ export class CampaignService {
         campaign: saved,
         numero: d.numero,
         municipio: d.municipio,
+        departamento: d.departamento,
+        nombreDeposito: d.nombreDeposito,
         requerido: d.requerido,
         plantillaId: plantillaIds[i % plantillaIds.length],
         estado:

@@ -41,6 +41,14 @@ export class CampaignTarget {
   @Column({ type: 'varchar', length: 150, nullable: true })
   municipio: string | null;
 
+  /** Departamento del municipio (para atributos de Chatwoot). */
+  @Column({ type: 'varchar', length: 150, nullable: true })
+  departamento: string | null;
+
+  /** Nombre del depósito (para atributos de Chatwoot). */
+  @Column({ name: 'nombre_deposito', type: 'varchar', length: 255, nullable: true })
+  nombreDeposito: string | null;
+
   /** Meta de cotizaciones del municipio (copiada de la programación). */
   @Column({ type: 'int', default: 0 })
   requerido: number;

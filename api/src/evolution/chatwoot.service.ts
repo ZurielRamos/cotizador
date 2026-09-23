@@ -120,6 +120,75 @@ export class ChatwootService {
     }
   }
 
+  /** PUT autenticado a la API de Chatwoot. Devuelve true si tuvo éxito. */
+  private async apiPut(
+    creds: ChatwootCredentials,
+    path: string,
+    body: unknown,
+  ): Promise<boolean> {
+    try {
+      const res = await fetch(`${creds.baseUrl}${path}`, {
+        method: 'PUT',
+        headers: {
+          api_access_token: creds.token,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Resuelve el id del contacto de Chatwoot a partir de un número.
+   * Devuelve null si no existe o no se puede determinar.
+   */
+  private async contactIdForNumero(
+    creds: ChatwootCredentials,
+    numero: string,
+  ): Promise<number | null> {
+    const acc = encodeURIComponent(creds.accountId);
+    const search = await this.apiGet<{
+      payload?: Array<{ id?: number }>;
+    }>(
+      creds,
+      `/api/v1/accounts/${acc}/contacts/search?q=${encodeURIComponent(numero)}`,
+    );
+    return search?.payload?.[0]?.id ?? null;
+  }
+
+  /**
+   * Establece atributos personalizados en el CONTACTO de Chatwoot asociado a
+   * un número (departamento, municipio, nombre del depósito, etc.). Best-effort:
+   * no lanza; devuelve true si se aplicó. Solo envía las claves con valor para
+   * no sobrescribir atributos existentes con vacíos.
+   */
+  async setContactCustomAttributes(
+    numero: string,
+    attrs: Record<string, string | null | undefined>,
+  ): Promise<boolean> {
+    const creds = await this.getCredentials();
+    if (!creds) return false;
+
+    const custom: Record<string, string> = {};
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v != null && String(v).trim() !== '') custom[k] = String(v);
+    }
+    if (Object.keys(custom).length === 0) return false;
+
+    const contactId = await this.contactIdForNumero(creds, numero);
+    if (contactId == null) return false;
+
+    const acc = encodeURIComponent(creds.accountId);
+    return this.apiPut(
+      creds,
+      `/api/v1/accounts/${acc}/contacts/${contactId}`,
+      { custom_attributes: custom },
+    );
+  }
+
   /**
    * Resuelve el inbox_id de Chatwoot correspondiente a una instancia de
    * Evolution. La inbox se nombra igual que la instancia (chatwootNameInbox).

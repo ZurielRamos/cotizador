@@ -43,9 +43,20 @@ import {
   type ProgramacionMunicipio,
 } from '@/lib/programaciones';
 
-/** Normaliza un teléfono a solo dígitos (para casar con los targets). */
+/**
+ * Normaliza un teléfono al mismo formato con el que el backend guarda los
+ * targets (código de país 57 de Colombia + 10 dígitos locales), para poder
+ * casar cada depósito con su target por número. Debe mantenerse en sincronía
+ * con normalizeNumero() del backend (api/src/campanias/campaign.service.ts).
+ */
 function soloDigitos(tel: string | null): string {
-  return (tel ?? '').replace(/\D/g, '');
+  let n = (tel ?? '').replace(/\D/g, '');
+  if (!n) return '';
+  if (n.startsWith('00')) n = n.slice(2);
+  if (n.startsWith('57') && n.length === 12) return n;
+  if (n.length === 11 && n.startsWith('0')) n = n.slice(1);
+  if (n.length === 10) return '57' + n;
+  return n;
 }
 
 /** Etiqueta + variante de badge para el estado de envío de un target. */
