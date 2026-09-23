@@ -1,19 +1,24 @@
 import {
   ArrowLeft,
   Check,
+  CheckCircle2,
   ExternalLink,
   Loader2,
   MapPin,
   MessageSquare,
   Phone,
+  Send,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import ProgramacionCampaignPanel from '@/components/ProgramacionCampaignPanel';
 import {
+  enviarMunicipioCampania,
+  fetchMunicipiosEstado,
   fetchProgramacionMunicipios,
   fetchProgramacionTargets,
   marcarCotizacion,
+  type MunicipiosEstado,
   type MunicipiosResumen,
   type TargetByNumero,
 } from '@/lib/campanias';
@@ -112,6 +117,8 @@ function ProgramacionDetallePage() {
   );
   const [targets, setTargets] = useState<TargetByNumero>({});
   const [municipios, setMunicipios] = useState<MunicipiosResumen>({});
+  const [muniEstado, setMuniEstado] = useState<MunicipiosEstado>({});
+  const [enviandoMuni, setEnviandoMuni] = useState<string | null>(null);
   const [chatwoot, setChatwoot] = useState<PublicChatwootConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -138,6 +145,10 @@ function ProgramacionDetallePage() {
     fetchProgramacionMunicipios(Number(id))
       .then(setMunicipios)
       .catch(() => setMunicipios({}));
+    // Estado de ejecución por municipio (pendiente/en curso/ejecutado).
+    fetchMunicipiosEstado(Number(id))
+      .then(setMuniEstado)
+      .catch(() => setMuniEstado({}));
     // Config de Chatwoot para construir los enlaces a las conversaciones.
     fetchChatwootConfig()
       .then(setChatwoot)
@@ -165,6 +176,26 @@ function ProgramacionDetallePage() {
       fetchProgramacionTargets(Number(id))
         .then(setTargets)
         .catch(() => {});
+    }
+  };
+
+  /** Envía la campaña de un municipio y refresca su estado. */
+  const enviarMunicipio = async (municipio: string) => {
+    if (!id) return;
+    setEnviandoMuni(municipio);
+    setError(null);
+    try {
+      await enviarMunicipioCampania(Number(id), municipio);
+      const estado = await fetchMunicipiosEstado(Number(id));
+      setMuniEstado(estado);
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? `No se pudo enviar el municipio: ${e.message}`
+          : 'No se pudo enviar el municipio.',
+      );
+    } finally {
+      setEnviandoMuni(null);
     }
   };
 
@@ -272,6 +303,23 @@ function ProgramacionDetallePage() {
                                 {m.depositos.length} depósitos
                               </Badge>
                               {(() => {
+                                const est = muniEstado[m.municipio];
+                                if (!est) return null;
+                                if (est.estado === 'ejecutado') {
+                                  return (
+                                    <Badge variant="active">Ejecutado</Badge>
+                                  );
+                                }
+                                if (est.estado === 'en_curso') {
+                                  return (
+                                    <Badge variant="default">
+                                      Enviando {est.enviados}/{est.total}
+                                    </Badge>
+                                  );
+                                }
+                                return null;
+                              })()}
+                              {(() => {
                                 const r = municipios[m.municipio];
                                 if (!r) return null;
                                 return r.metaCumplida ? (
@@ -285,10 +333,45 @@ function ProgramacionDetallePage() {
                                 );
                               })()}
                             </div>
-                            <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                              <span>Requerido: {m.requerido}</span>
-                              <span>Objetivo triple: {m.objetivoTriple}</span>
-                              <span>Devueltos: {m.depositosDevueltos}</span>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                                <span>Requerido: {m.requerido}</span>
+                                <span>Objetivo triple: {m.objetivoTriple}</span>
+                                <span>Devueltos: {m.depositosDevueltos}</span>
+                              </div>
+                              {(() => {
+                                const est = muniEstado[m.municipio];
+                                const enviando = enviandoMuni === m.municipio;
+                                // Municipio ya ejecutado: no permitir reenvío.
+                                if (est?.estado === 'ejecutado') {
+                                  return (
+                                    <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-600">
+                                      <CheckCircle2 className="size-4" />
+                                      Ejecutado
+                                    </span>
+                                  );
+                                }
+                                const enCurso = est?.estado === 'en_curso';
+                                return (
+                                  <Button
+                                    size="sm"
+                                    variant={enCurso ? 'outline' : 'default'}
+                                    disabled={enviando || enCurso}
+                                    // Evita que el click abra/cierre el acordeón.
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void enviarMunicipio(m.municipio);
+                                    }}
+                                  >
+                                    {enviando ? (
+                                      <Loader2 className="size-4 animate-spin" />
+                                    ) : (
+                                      <Send className="size-4" />
+                                    )}
+                                    {enCurso ? 'En curso' : 'Enviar municipio'}
+                                  </Button>
+                                );
+                              })()}
                             </div>
                           </div>
                         }

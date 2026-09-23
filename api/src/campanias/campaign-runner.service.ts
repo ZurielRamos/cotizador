@@ -211,12 +211,17 @@ export class CampaignRunnerService {
     }
   }
 
-  /** Marca la campaña como completada si ya no quedan targets pendientes/en envío. */
+  /**
+   * Marca la campaña como completada solo cuando ya no queda nada por procesar:
+   * ni targets en curso ('pending'/'sending') ni municipios sin lanzar
+   * ('queued'). Si aún hay municipios encolados, la campaña sigue viva a la
+   * espera de que se envíen.
+   */
   private async maybeComplete(campaignId: string): Promise<void> {
     const restantes = await this.targetRepo.count({
       where: {
         campaign: { id: campaignId },
-        estado: In(['pending', 'sending']),
+        estado: In(['queued', 'pending', 'sending']),
       },
     });
     if (restantes === 0) {

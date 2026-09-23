@@ -11,6 +11,8 @@ import {
 import { Campaign } from './campaign.entity.js';
 
 export type TargetStatus =
+  /** Creado pero aún no lanzado (su municipio no ha sido enviado). */
+  | 'queued'
   | 'pending'
   | 'sending'
   | 'sent'

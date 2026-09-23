@@ -439,10 +439,16 @@ export class CampaignService {
    * y todas las plantillas activas, y la deja lista (draft) o iniciada.
    * Solo una campaña "viva" por programación: si ya hay una draft/running/
    * paused, se rechaza.
+   *
+   * @param municipios Nombres de municipios cuyos targets quedan listos para
+   *   enviar (estado 'pending'). Si es null, se activan TODOS los municipios
+   *   (comportamiento del botón global "Iniciar campaña"). Los municipios no
+   *   incluidos quedan en 'queued' (creados pero no lanzados).
    */
   async createFromProgramacion(
     programacionId: number,
     iniciar = false,
+    municipios: string[] | null = null,
   ): Promise<CampaignView> {
     const viva = await this.campaignRepo.findOne({
       where: {
@@ -493,6 +499,10 @@ export class CampaignService {
     });
     const saved = await this.campaignRepo.save(campaign);
 
+    // Los municipios activados quedan listos para enviar ('pending'); el resto
+    // se crean 'queued' (encolados pero sin lanzar) para poder enviarlos luego
+    // municipio por municipio.
+    const activados = municipios === null ? null : new Set(municipios);
     const targets = destinatarios.map((d, i) =>
       this.targetRepo.create({
         campaign: saved,
@@ -500,12 +510,168 @@ export class CampaignService {
         municipio: d.municipio,
         requerido: d.requerido,
         plantillaId: plantillaIds[i % plantillaIds.length],
-        estado: 'pending',
+        estado:
+          activados === null || activados.has(d.municipio)
+            ? 'pending'
+            : 'queued',
       }),
     );
     await this.targetRepo.save(targets);
 
     return this.toView(saved);
+  }
+
+  /**
+   * Envía (encola) la campaña de un municipio concreto de una programación.
+   * - Si la programación no tiene campaña viva, la crea con TODOS los
+   *   municipios en 'queued' y activa solo el municipio pedido.
+   * - Si ya existe, activa (pasa a 'pending') los targets 'queued' de ese
+   *   municipio y reanuda la campaña.
+   *
+   * Idempotente: un municipio ya ejecutado (todos sus targets en estado
+   * terminal) no se reencola. Devuelve la vista de la campaña.
+   */
+  async enviarMunicipio(
+    programacionId: number,
+    municipio: string,
+  ): Promise<CampaignView> {
+    let campaign = await this.campaignRepo.findOne({
+      where: {
+        programacionId,
+        estado: Not(In(['completed', 'cancelled'])),
+      },
+    });
+
+    // Sin campaña viva: crearla con este municipio activado y el resto en cola.
+    if (!campaign) {
+      const view = await this.createFromProgramacion(programacionId, true, [
+        municipio,
+      ]);
+      return view;
+    }
+
+    // Encolar (pasar a 'pending') los targets del municipio que aún no se han
+    // lanzado. Los ya enviados/fallidos/omitidos NO se reejecutan.
+    const result = await this.targetRepo
+      .createQueryBuilder()
+      .update(CampaignTarget)
+      .set({ estado: 'pending' })
+      .where('campaign_id = :cid', { cid: campaign.id })
+      .andWhere('municipio = :mun', { mun: municipio })
+      .andWhere('estado = :estado', { estado: 'queued' })
+      .execute();
+
+    if ((result.affected ?? 0) === 0) {
+      throw new BadRequestException(
+        `El municipio "${municipio}" no tiene envíos pendientes (ya fue ejecutado o no pertenece a la campaña).`,
+      );
+    }
+
+    // Asegurar que la campaña esté corriendo para que el runner la procese.
+    if (campaign.estado !== 'running') {
+      campaign.estado = 'running';
+      campaign = await this.campaignRepo.save(campaign);
+    }
+
+    return this.toView(campaign);
+  }
+
+  /**
+   * Estado de ejecución por municipio de la campaña de una programación.
+   * Para cada municipio: métricas y un estado agregado:
+   *  - 'pendiente': ningún target lanzado todavía (todos 'queued').
+   *  - 'en_curso': hay targets 'pending'/'sending'.
+   *  - 'ejecutado': todos los targets en estado terminal (sent/failed/skipped).
+   * Devuelto como mapa { [municipio]: {...} }.
+   */
+  async municipiosEstado(programacionId: number): Promise<
+    Record<
+      string,
+      {
+        estado: 'pendiente' | 'en_curso' | 'ejecutado';
+        total: number;
+        enviados: number;
+        pendientes: number;
+        fallidos: number;
+        requerido: number;
+        cotizaciones: number;
+        metaCumplida: boolean;
+      }
+    >
+  > {
+    const campaign = await this.campaignOfProgramacion(programacionId);
+    if (!campaign) return {};
+    const targets = await this.targetRepo.find({
+      where: { campaign: { id: campaign.id } },
+    });
+
+    type Acc = {
+      total: number;
+      queued: number;
+      pending: number;
+      sending: number;
+      sent: number;
+      failed: number;
+      skipped: number;
+      requerido: number;
+      cotizaciones: number;
+    };
+    const acc = new Map<string, Acc>();
+    for (const t of targets) {
+      const key = t.municipio ?? '—';
+      let e = acc.get(key);
+      if (!e) {
+        e = {
+          total: 0,
+          queued: 0,
+          pending: 0,
+          sending: 0,
+          sent: 0,
+          failed: 0,
+          skipped: 0,
+          requerido: t.requerido,
+          cotizaciones: 0,
+        };
+        acc.set(key, e);
+      }
+      e.total += 1;
+      e[t.estado] += 1;
+      if (t.cotizacion) e.cotizaciones += 1;
+    }
+
+    const map: Record<
+      string,
+      {
+        estado: 'pendiente' | 'en_curso' | 'ejecutado';
+        total: number;
+        enviados: number;
+        pendientes: number;
+        fallidos: number;
+        requerido: number;
+        cotizaciones: number;
+        metaCumplida: boolean;
+      }
+    > = {};
+    for (const [k, e] of acc) {
+      const enCurso = e.pending + e.sending > 0;
+      const sinLanzar = e.queued === e.total;
+      const estado: 'pendiente' | 'en_curso' | 'ejecutado' = enCurso
+        ? 'en_curso'
+        : sinLanzar
+          ? 'pendiente'
+          : 'ejecutado';
+      map[k] = {
+        estado,
+        total: e.total,
+        enviados: e.sent,
+        pendientes: e.queued + e.pending + e.sending,
+        fallidos: e.failed,
+        requerido: e.requerido,
+        cotizaciones: e.cotizaciones,
+        metaCumplida: e.requerido > 0 && e.cotizaciones >= e.requerido,
+      };
+    }
+    return map;
   }
 
   /**

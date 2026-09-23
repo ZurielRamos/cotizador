@@ -72,6 +72,50 @@ export async function fetchProgramacionMunicipios(
   return handle<MunicipiosResumen>(res);
 }
 
+/** Estado de ejecución de un municipio dentro de la campaña. */
+export type EstadoMunicipio = 'pendiente' | 'en_curso' | 'ejecutado';
+
+/** Estado + métricas por municipio: { [municipio]: {...} }. */
+export type MunicipiosEstado = Record<
+  string,
+  {
+    estado: EstadoMunicipio;
+    total: number;
+    enviados: number;
+    pendientes: number;
+    fallidos: number;
+    requerido: number;
+    cotizaciones: number;
+    metaCumplida: boolean;
+  }
+>;
+
+/** Estado de ejecución por municipio (pendiente/en curso/ejecutado). */
+export async function fetchMunicipiosEstado(
+  progId: number,
+): Promise<MunicipiosEstado> {
+  const res = await fetch(
+    `${API_URL}/campanias/programacion/${progId}/municipios/estado`,
+  );
+  return handle<MunicipiosEstado>(res);
+}
+
+/** Envía (encola) la campaña de un municipio concreto de la programación. */
+export async function enviarMunicipioCampania(
+  progId: number,
+  municipio: string,
+): Promise<Campaign> {
+  const res = await fetch(
+    `${API_URL}/campanias/programacion/${progId}/municipio`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ municipio }),
+    },
+  );
+  return handle<Campaign>(res);
+}
+
 /** Marca/desmarca la cotización de un destinatario (por número). */
 export async function marcarCotizacion(
   progId: number,
