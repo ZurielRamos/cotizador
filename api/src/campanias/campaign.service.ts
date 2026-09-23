@@ -38,9 +38,44 @@ export type CampaignView = {
   progreso: CampaignProgress;
 };
 
-/** Normaliza un número a solo dígitos (Evolution espera formato sin +). */
+/** Código de país de Colombia. */
+const CO_COUNTRY_CODE = '57';
+
+/**
+ * Normaliza un teléfono al formato internacional que espera Evolution
+ * (solo dígitos, con código de país, sin '+').
+ *
+ * Los depósitos vienen con números locales de Colombia:
+ *  - Celulares: 10 dígitos que empiezan por 3 (ej. 3186424139).
+ *  - Fijos con indicativo: 10 dígitos que empiezan por 60 (ej. 6041234567).
+ * Evolution los rechaza (Bad Request) si les falta el código de país 57.
+ *
+ * Reglas aplicadas:
+ *  - Se quitan todos los no-dígitos.
+ *  - Prefijo de marcación internacional '00' → se elimina.
+ *  - Un '0' inicial de troncal → se elimina.
+ *  - Si ya trae el código país 57 (12 dígitos), se deja igual.
+ *  - Si son 10 dígitos locales, se antepone 57.
+ */
 function normalizeNumero(raw: string): string {
-  return raw.replace(/\D/g, '');
+  let n = raw.replace(/\D/g, '');
+  if (!n) return '';
+
+  // Prefijo de salida internacional: 00 + país (ej. 0057...).
+  if (n.startsWith('00')) n = n.slice(2);
+
+  // Ya viene con código de país de Colombia (57 + 10 dígitos locales).
+  if (n.startsWith(CO_COUNTRY_CODE) && n.length === 12) return n;
+
+  // '0' inicial de troncal nacional (ej. 03186424139).
+  if (n.length === 11 && n.startsWith('0')) n = n.slice(1);
+
+  // Número local de 10 dígitos (celular 3xx o fijo 60x): anteponer país.
+  if (n.length === 10) return CO_COUNTRY_CODE + n;
+
+  // Cualquier otro caso: devolver los dígitos tal cual (se filtra por longitud
+  // aguas arriba). Evita romper números ya en formato internacional distinto.
+  return n;
 }
 
 @Injectable()
@@ -526,10 +561,11 @@ export class CampaignService {
    * - Si la programación no tiene campaña viva, la crea con TODOS los
    *   municipios en 'queued' y activa solo el municipio pedido.
    * - Si ya existe, activa (pasa a 'pending') los targets 'queued' de ese
-   *   municipio y reanuda la campaña.
+   *   municipio y REINTENTA los que quedaron 'failed', y reanuda la campaña.
    *
-   * Idempotente: un municipio ya ejecutado (todos sus targets en estado
-   * terminal) no se reencola. Devuelve la vista de la campaña.
+   * No reenvía los que ya se enviaron con éxito ('sent') ni los omitidos por
+   * cuota cumplida ('skipped'): solo los pendientes de lanzar y los fallidos.
+   * Devuelve la vista de la campaña.
    */
   async enviarMunicipio(
     programacionId: number,
@@ -550,20 +586,22 @@ export class CampaignService {
       return view;
     }
 
-    // Encolar (pasar a 'pending') los targets del municipio que aún no se han
-    // lanzado. Los ya enviados/fallidos/omitidos NO se reejecutan.
+    // Activar (pasar a 'pending') los targets del municipio que aún no se han
+    // lanzado ('queued') o que fallaron ('failed', para reintentarlos). Los
+    // fallidos reinician intentos/error para un reintento limpio. Los ya
+    // enviados ('sent') y omitidos ('skipped') NO se tocan.
     const result = await this.targetRepo
       .createQueryBuilder()
       .update(CampaignTarget)
-      .set({ estado: 'pending' })
+      .set({ estado: 'pending', intentos: 0, ultimoError: null })
       .where('campaign_id = :cid', { cid: campaign.id })
       .andWhere('municipio = :mun', { mun: municipio })
-      .andWhere('estado = :estado', { estado: 'queued' })
+      .andWhere('estado IN (:...estados)', { estados: ['queued', 'failed'] })
       .execute();
 
     if ((result.affected ?? 0) === 0) {
       throw new BadRequestException(
-        `El municipio "${municipio}" no tiene envíos pendientes (ya fue ejecutado o no pertenece a la campaña).`,
+        `El municipio "${municipio}" no tiene envíos pendientes ni fallidos por reintentar.`,
       );
     }
 
@@ -580,15 +618,18 @@ export class CampaignService {
    * Estado de ejecución por municipio de la campaña de una programación.
    * Para cada municipio: métricas y un estado agregado:
    *  - 'pendiente': ningún target lanzado todavía (todos 'queued').
-   *  - 'en_curso': hay targets 'pending'/'sending'.
-   *  - 'ejecutado': todos los targets en estado terminal (sent/failed/skipped).
+   *  - 'en_curso': hay targets 'pending'/'sending' en proceso.
+   *  - 'con_fallos': ya no hay nada en proceso, no hubo ningún envío exitoso
+   *     y hay al menos un fallido → se puede reintentar.
+   *  - 'ejecutado': ya no hay nada en proceso y hubo al menos un envío exitoso
+   *     (aunque también existan fallidos, que se pueden reintentar aparte).
    * Devuelto como mapa { [municipio]: {...} }.
    */
   async municipiosEstado(programacionId: number): Promise<
     Record<
       string,
       {
-        estado: 'pendiente' | 'en_curso' | 'ejecutado';
+        estado: 'pendiente' | 'en_curso' | 'con_fallos' | 'ejecutado';
         total: number;
         enviados: number;
         pendientes: number;
@@ -642,7 +683,7 @@ export class CampaignService {
     const map: Record<
       string,
       {
-        estado: 'pendiente' | 'en_curso' | 'ejecutado';
+        estado: 'pendiente' | 'en_curso' | 'con_fallos' | 'ejecutado';
         total: number;
         enviados: number;
         pendientes: number;
@@ -653,13 +694,19 @@ export class CampaignService {
       }
     > = {};
     for (const [k, e] of acc) {
-      const enCurso = e.pending + e.sending > 0;
+      const enProceso = e.pending + e.sending > 0;
       const sinLanzar = e.queued === e.total;
-      const estado: 'pendiente' | 'en_curso' | 'ejecutado' = enCurso
-        ? 'en_curso'
-        : sinLanzar
-          ? 'pendiente'
-          : 'ejecutado';
+      let estado: 'pendiente' | 'en_curso' | 'con_fallos' | 'ejecutado';
+      if (enProceso) {
+        estado = 'en_curso';
+      } else if (sinLanzar) {
+        estado = 'pendiente';
+      } else if (e.sent === 0 && e.failed > 0) {
+        // No se envió nada con éxito y hubo fallos: reintentar.
+        estado = 'con_fallos';
+      } else {
+        estado = 'ejecutado';
+      }
       map[k] = {
         estado,
         total: e.total,

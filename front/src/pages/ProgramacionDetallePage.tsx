@@ -307,13 +307,38 @@ function ProgramacionDetallePage() {
                                 if (!est) return null;
                                 if (est.estado === 'ejecutado') {
                                   return (
-                                    <Badge variant="active">Ejecutado</Badge>
+                                    <Badge variant="active">
+                                      Ejecutado {est.enviados}/{est.total}
+                                    </Badge>
                                   );
                                 }
                                 if (est.estado === 'en_curso') {
                                   return (
                                     <Badge variant="default">
                                       Enviando {est.enviados}/{est.total}
+                                    </Badge>
+                                  );
+                                }
+                                if (est.estado === 'con_fallos') {
+                                  return (
+                                    <Badge variant="destructive">
+                                      {est.fallidos} fallidos
+                                    </Badge>
+                                  );
+                                }
+                                return null;
+                              })()}
+                              {(() => {
+                                // Badge extra de fallidos cuando el municipio se
+                                // ejecutó pero algunos envíos fallaron.
+                                const est = muniEstado[m.municipio];
+                                if (
+                                  est?.estado === 'ejecutado' &&
+                                  est.fallidos > 0
+                                ) {
+                                  return (
+                                    <Badge variant="destructive">
+                                      {est.fallidos} fallidos
                                     </Badge>
                                   );
                                 }
@@ -342,8 +367,14 @@ function ProgramacionDetallePage() {
                               {(() => {
                                 const est = muniEstado[m.municipio];
                                 const enviando = enviandoMuni === m.municipio;
-                                // Municipio ya ejecutado: no permitir reenvío.
-                                if (est?.estado === 'ejecutado') {
+                                const enCurso = est?.estado === 'en_curso';
+                                const conFallos = est?.estado === 'con_fallos';
+                                const ejecutadoOk =
+                                  est?.estado === 'ejecutado';
+                                const tieneFallos = (est?.fallidos ?? 0) > 0;
+
+                                // Ejecutado sin fallos: nada que reenviar.
+                                if (ejecutadoOk && !tieneFallos) {
                                   return (
                                     <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-600">
                                       <CheckCircle2 className="size-4" />
@@ -351,25 +382,52 @@ function ProgramacionDetallePage() {
                                     </span>
                                   );
                                 }
-                                const enCurso = est?.estado === 'en_curso';
-                                return (
-                                  <Button
-                                    size="sm"
-                                    variant={enCurso ? 'outline' : 'default'}
-                                    disabled={enviando || enCurso}
-                                    // Evita que el click abra/cierre el acordeón.
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      void enviarMunicipio(m.municipio);
-                                    }}
-                                  >
-                                    {enviando ? (
+
+                                // En curso: botón deshabilitado.
+                                if (enCurso) {
+                                  return (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled
+                                    >
                                       <Loader2 className="size-4 animate-spin" />
-                                    ) : (
-                                      <Send className="size-4" />
-                                    )}
-                                    {enCurso ? 'En curso' : 'Enviar municipio'}
-                                  </Button>
+                                      En curso
+                                    </Button>
+                                  );
+                                }
+
+                                // con_fallos, o ejecutado con fallos → reintentar.
+                                // pendiente/sin estado → enviar por primera vez.
+                                const esReintento = conFallos || ejecutadoOk;
+                                return (
+                                  <div className="flex items-center gap-2">
+                                    {ejecutadoOk ? (
+                                      <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-600">
+                                        <CheckCircle2 className="size-4" />
+                                        {est?.enviados}/{est?.total}
+                                      </span>
+                                    ) : null}
+                                    <Button
+                                      size="sm"
+                                      variant={esReintento ? 'outline' : 'default'}
+                                      disabled={enviando}
+                                      // Evita que el click abra/cierre el acordeón.
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void enviarMunicipio(m.municipio);
+                                      }}
+                                    >
+                                      {enviando ? (
+                                        <Loader2 className="size-4 animate-spin" />
+                                      ) : (
+                                        <Send className="size-4" />
+                                      )}
+                                      {esReintento
+                                        ? 'Reintentar fallidos'
+                                        : 'Enviar municipio'}
+                                    </Button>
+                                  </div>
                                 );
                               })()}
                             </div>

@@ -73,7 +73,11 @@ export async function fetchProgramacionMunicipios(
 }
 
 /** Estado de ejecución de un municipio dentro de la campaña. */
-export type EstadoMunicipio = 'pendiente' | 'en_curso' | 'ejecutado';
+export type EstadoMunicipio =
+  | 'pendiente'
+  | 'en_curso'
+  | 'con_fallos'
+  | 'ejecutado';
 
 /** Estado + métricas por municipio: { [municipio]: {...} }. */
 export type MunicipiosEstado = Record<
