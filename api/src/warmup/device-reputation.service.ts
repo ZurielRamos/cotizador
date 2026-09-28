@@ -26,16 +26,31 @@ export class DeviceReputationService {
     return Math.min(1, Math.max(0, value));
   }
 
-  /** Ajusta el score y pausa el dispositivo si cae bajo el umbral. */
+  /**
+   * Ajusta el score y gestiona la pausa AUTOMÁTICA por reputación:
+   *  - si cae bajo el umbral → pausa automática.
+   *  - si se recupera por encima del umbral (+ histéresis) → se levanta la
+   *    pausa automática.
+   * Nunca toca una pausa manual (record.manualPause): esa solo se levanta con
+   * resume() explícito.
+   */
   private async applyReputationDelta(
     record: DeviceReputation,
     delta: number,
   ): Promise<void> {
     const config = await this.configService.get();
+    const threshold = Number(config.pauseThreshold);
     const next = this.clampScore(Number(record.reputationScore) + delta);
     record.reputationScore = next.toFixed(2);
-    if (next < Number(config.pauseThreshold)) {
+
+    if (record.manualPause) return; // La pausa manual manda; no la tocamos.
+
+    if (next < threshold) {
       record.paused = true;
+    } else if (record.paused && next >= threshold + 0.05) {
+      // Histéresis: exige recuperar un pequeño margen antes de reactivar,
+      // para no oscilar pausa/activo en el borde del umbral.
+      record.paused = false;
     }
   }
 
@@ -128,17 +143,31 @@ export class DeviceReputationService {
     await this.repo.save(record);
   }
 
-  /** Pausa manual: no se le asignan envíos hasta reanudar. */
+  /** Pausa manual: no se le asignan envíos hasta reanudar explícitamente. */
   async pause(instanceName: string): Promise<void> {
     const record = await this.rateLimit.getOrCreate(instanceName);
     record.paused = true;
+    record.manualPause = true;
     await this.repo.save(record);
   }
 
-  /** Reanuda un dispositivo pausado. */
+  /**
+   * Reanuda un dispositivo pausado (manual o automático). Limpia la marca de
+   * pausa manual. Si la reputación sigue bajo el umbral, un fallo posterior lo
+   * podría volver a auto-pausar; por eso, al reanudar manualmente se le da un
+   * piso de reputación para que pueda operar.
+   */
   async resume(instanceName: string): Promise<void> {
     const record = await this.rateLimit.getOrCreate(instanceName);
+    const config = await this.configService.get();
+    const threshold = Number(config.pauseThreshold);
     record.paused = false;
+    record.manualPause = false;
+    // Si está por debajo del umbral, subir al umbral + margen para que no se
+    // vuelva a pausar de inmediato al primer evento negativo.
+    if (Number(record.reputationScore) < threshold) {
+      record.reputationScore = this.clampScore(threshold + 0.1).toFixed(2);
+    }
     await this.repo.save(record);
   }
 }

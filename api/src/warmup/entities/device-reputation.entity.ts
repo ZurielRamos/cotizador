@@ -36,9 +36,16 @@ export class DeviceReputation {
   })
   reputationScore: string;
 
-  /** Pausado manualmente o por reputación baja: no se le asignan envíos. */
+  /** Pausado (manual o por reputación baja): no se le asignan envíos. */
   @Column({ name: 'paused', default: false })
   paused: boolean;
+
+  /**
+   * True si la pausa fue manual (el usuario la pausó). Una pausa manual NO se
+   * levanta automáticamente cuando la reputación se recupera; una pausa
+   * automática (por reputación baja) sí. */
+  @Column({ name: 'manual_pause', default: false })
+  manualPause: boolean;
 
   // ---- Contadores de envío (con ventanas de reseteo) ----
 
