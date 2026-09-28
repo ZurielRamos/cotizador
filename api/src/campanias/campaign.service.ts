@@ -339,7 +339,7 @@ export class CampaignService {
       }
     >
   > {
-    const campaign = await this.campaignOfProgramacion(programacionId);
+    const campaign = await this.campaignVigenteDeProgramacion(programacionId);
     if (!campaign) return {};
     const targets = await this.targetRepo.find({
       where: { campaign: { id: campaign.id } },
@@ -382,7 +382,7 @@ export class CampaignService {
       { requerido: number; cotizaciones: number; metaCumplida: boolean }
     >
   > {
-    const campaign = await this.campaignOfProgramacion(programacionId);
+    const campaign = await this.campaignVigenteDeProgramacion(programacionId);
     if (!campaign) return {};
     const targets = await this.targetRepo.find({
       where: { campaign: { id: campaign.id } },
@@ -441,6 +441,25 @@ export class CampaignService {
   ): Promise<Campaign | null> {
     return this.campaignRepo.findOne({
       where: { programacionId },
+      order: { creadoEn: 'DESC' },
+    });
+  }
+
+  /**
+   * Campaña VIGENTE (accionable) de una programación: la más reciente que NO
+   * esté cancelada ni completada. Las vistas de estado por municipio deben
+   * usar esta, no la última a secas: una campaña cancelada dejaría targets en
+   * 'pending'/'queued' que la UI mostraría erróneamente como "en curso" y
+   * bloquearía el reenvío.
+   */
+  private campaignVigenteDeProgramacion(
+    programacionId: number,
+  ): Promise<Campaign | null> {
+    return this.campaignRepo.findOne({
+      where: {
+        programacionId,
+        estado: Not(In(['cancelled', 'completed'])),
+      },
       order: { creadoEn: 'DESC' },
     });
   }
@@ -666,7 +685,7 @@ export class CampaignService {
       }
     >
   > {
-    const campaign = await this.campaignOfProgramacion(programacionId);
+    const campaign = await this.campaignVigenteDeProgramacion(programacionId);
     if (!campaign) return {};
     const targets = await this.targetRepo.find({
       where: { campaign: { id: campaign.id } },
