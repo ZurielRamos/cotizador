@@ -7,17 +7,20 @@ import {
   MapPin,
   MessageSquare,
   Phone,
+  RefreshCw,
   Send,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import ProgramacionCampaignPanel from '@/components/ProgramacionCampaignPanel';
 import {
+  enviarDepositoCampania,
   enviarMunicipioCampania,
   fetchMunicipiosEstado,
   fetchProgramacionMunicipios,
   fetchProgramacionTargets,
   marcarCotizacion,
+  recargarDepositoCampania,
   type MunicipiosEstado,
   type MunicipiosResumen,
   type TargetByNumero,
@@ -153,6 +156,8 @@ function ProgramacionDetallePage() {
   const [municipios, setMunicipios] = useState<MunicipiosResumen>({});
   const [muniEstado, setMuniEstado] = useState<MunicipiosEstado>({});
   const [enviandoMuni, setEnviandoMuni] = useState<string | null>(null);
+  // Teléfono o depositoId cuya acción (enviar/recargar) está en curso.
+  const [accionDeposito, setAccionDeposito] = useState<string | null>(null);
   const [chatwoot, setChatwoot] = useState<PublicChatwootConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -230,6 +235,50 @@ function ProgramacionDetallePage() {
       );
     } finally {
       setEnviandoMuni(null);
+    }
+  };
+
+  /** Envía un depósito individual (por teléfono) y refresca el estado. */
+  const enviarDeposito = async (telefono: string | null) => {
+    if (!id || !telefono) return;
+    setAccionDeposito(telefono);
+    setError(null);
+    try {
+      await enviarDepositoCampania(Number(id), telefono);
+      const [estado, tgs] = await Promise.all([
+        fetchMunicipiosEstado(Number(id)),
+        fetchProgramacionTargets(Number(id)),
+      ]);
+      setMuniEstado(estado);
+      setTargets(tgs);
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? `No se pudo enviar el depósito: ${e.message}`
+          : 'No se pudo enviar el depósito.',
+      );
+    } finally {
+      setAccionDeposito(null);
+    }
+  };
+
+  /** Recarga un depósito con otro del mismo municipio y recarga el detalle. */
+  const recargarDeposito = async (depositoId: string | null) => {
+    if (!id || !depositoId) return;
+    setAccionDeposito(depositoId);
+    setError(null);
+    try {
+      await recargarDepositoCampania(Number(id), depositoId);
+      // El depósito y su target cambian: recargar el detalle completo.
+      cargar();
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? `No se pudo recargar el depósito: ${e.message}`
+          : 'No se pudo recargar el depósito.',
+      );
+    } finally {
+      setAccionDeposito(null);
     }
   };
 
@@ -484,6 +533,7 @@ function ProgramacionDetallePage() {
                           <TableHead>Respondió</TableHead>
                           <TableHead>Cotización</TableHead>
                           <TableHead>Dirección</TableHead>
+                          <TableHead>Acciones</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -599,6 +649,51 @@ function ProgramacionDetallePage() {
                             </TableCell>
                             <TableCell className="text-muted-foreground">
                               {d.direccion ?? '—'}
+                            </TableCell>
+                            <TableCell>
+                              {(() => {
+                                const busy =
+                                  accionDeposito === d.telefono ||
+                                  accionDeposito === d.depositoId;
+                                return (
+                                  <div className="flex items-center gap-1.5">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={busy || !d.telefono}
+                                      title="Enviar este depósito"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void enviarDeposito(d.telefono);
+                                      }}
+                                    >
+                                      {busy ? (
+                                        <Loader2 className="size-3.5 animate-spin" />
+                                      ) : (
+                                        <Send className="size-3.5" />
+                                      )}
+                                      Enviar
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      disabled={busy}
+                                      title="Recargar con otro depósito del municipio"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void recargarDeposito(d.depositoId);
+                                      }}
+                                    >
+                                      {busy ? (
+                                        <Loader2 className="size-3.5 animate-spin" />
+                                      ) : (
+                                        <RefreshCw className="size-3.5" />
+                                      )}
+                                      Recargar
+                                    </Button>
+                                  </div>
+                                );
+                              })()}
                             </TableCell>
                           </TableRow>
                           );

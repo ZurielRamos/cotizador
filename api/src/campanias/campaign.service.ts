@@ -3,9 +3,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, IsNull, Not, Repository } from 'typeorm';
 import { Plantilla } from '../plantillas/entities/plantilla.entity.js';
+import { Deposito } from '../programaciones/entities/deposito.entity.js';
+import { Municipio } from '../programaciones/entities/municipio.entity.js';
 import { Programacion } from '../programaciones/entities/programacion.entity.js';
 import { OnEvent } from '@nestjs/event-emitter';
 import { RateLimitService } from '../warmup/rate-limit.service.js';
@@ -89,8 +92,13 @@ export class CampaignService {
     private readonly plantillaRepo: Repository<Plantilla>,
     @InjectRepository(Programacion)
     private readonly programacionRepo: Repository<Programacion>,
+    @InjectRepository(Municipio)
+    private readonly municipioRepo: Repository<Municipio>,
+    @InjectRepository(Deposito)
+    private readonly depositoRepo: Repository<Deposito>,
     private readonly rateLimit: RateLimitService,
     private readonly instances: EvolutionInstancesService,
+    private readonly config: ConfigService,
   ) {}
 
   async create(dto: CreateCampaignDto): Promise<CampaignView> {
@@ -657,6 +665,233 @@ export class CampaignService {
     }
 
     return this.toView(campaign);
+  }
+
+  /**
+   * Obtiene (o crea) la campaña viva de una programación. Si no existe, la
+   * crea con TODOS los municipios en cola ('queued') sin activar ninguno, para
+   * poder activar luego envíos individuales (depósito a depósito).
+   */
+  private async campaignVivaOCrear(programacionId: number): Promise<Campaign> {
+    const viva = await this.campaignRepo.findOne({
+      where: {
+        programacionId,
+        estado: Not(In(['completed', 'cancelled'])),
+      },
+    });
+    if (viva) return viva;
+    // municipios = [] → ninguno activado; todos los targets quedan 'queued'.
+    await this.createFromProgramacion(programacionId, true, []);
+    const creada = await this.campaignRepo.findOne({
+      where: {
+        programacionId,
+        estado: Not(In(['completed', 'cancelled'])),
+      },
+    });
+    if (!creada) {
+      throw new BadRequestException('No se pudo crear la campaña.');
+    }
+    return creada;
+  }
+
+  /**
+   * Envía (encola) un depósito individual por su teléfono. Crea la campaña si
+   * no existe. Activa ese target ('queued'/'failed' → 'pending') sin tocar el
+   * resto. Idempotente: si ya está enviado o en curso, no hace nada nuevo.
+   */
+  async enviarDeposito(
+    programacionId: number,
+    telefono: string,
+  ): Promise<CampaignView> {
+    const numero = normalizeNumero(telefono);
+    if (numero.length < 8) {
+      throw new BadRequestException('Teléfono inválido.');
+    }
+    let campaign = await this.campaignVivaOCrear(programacionId);
+
+    const result = await this.targetRepo
+      .createQueryBuilder()
+      .update(CampaignTarget)
+      .set({ estado: 'pending', intentos: 0, ultimoError: null })
+      .where('campaign_id = :cid', { cid: campaign.id })
+      .andWhere('numero = :num', { num: numero })
+      .andWhere('estado IN (:...estados)', { estados: ['queued', 'failed'] })
+      .execute();
+
+    if ((result.affected ?? 0) === 0) {
+      throw new BadRequestException(
+        'El depósito no tiene envíos pendientes ni fallidos por reintentar (ya fue enviado o no pertenece a la campaña).',
+      );
+    }
+
+    if (campaign.estado !== 'running') {
+      campaign.estado = 'running';
+      campaign = await this.campaignRepo.save(campaign);
+    }
+    return this.toView(campaign);
+  }
+
+  /**
+   * Recarga un depósito con otro aleatorio del mismo municipio: consulta la API
+   * de PriceControl (random_json) excluyendo los depósitos ya presentes del
+   * municipio, y REEMPLAZA el depósito original (datos + su target) por el
+   * nuevo, dejándolo listo para enviar ('pending'). Devuelve el nuevo depósito.
+   */
+  async recargarDeposito(
+    programacionId: number,
+    depositoId: string,
+  ): Promise<{
+    depositoId: string;
+    idDeposito: string | null;
+    nombre: string | null;
+    telefono: string | null;
+    municipio: string;
+  }> {
+    // Depósito original + su municipio dentro de esta programación.
+    const deposito = await this.depositoRepo.findOne({
+      where: {
+        depositoId,
+        municipio: { programacion: { id: programacionId } },
+      },
+      relations: { municipio: { programacion: true } },
+    });
+    if (!deposito) {
+      throw new NotFoundException(
+        `Depósito ${depositoId} no encontrado en la programación ${programacionId}.`,
+      );
+    }
+    const municipio = deposito.municipio;
+
+    // Excluir todos los depósitos ya presentes del municipio (evitar repetir).
+    const delMunicipio = await this.depositoRepo.find({
+      where: { municipio: { id: municipio.id } },
+    });
+    const excludeIds = delMunicipio
+      .map((d) => d.depositoId)
+      .filter((v): v is string => Boolean(v));
+
+    // Consultar PriceControl un depósito aleatorio del municipio.
+    const nuevo = await this.fetchDepositoAleatorio(
+      municipio.municipioId,
+      excludeIds,
+    );
+    if (!nuevo) {
+      throw new BadRequestException(
+        `No hay más depósitos disponibles en ${municipio.municipio} para recargar.`,
+      );
+    }
+
+    const numeroViejo = deposito.telefono
+      ? normalizeNumero(deposito.telefono)
+      : null;
+
+    // Reemplazar los datos del depósito por los del nuevo.
+    deposito.depositoId = String(nuevo.id);
+    deposito.idDeposito = nuevo.IDdeposito ?? null;
+    deposito.nombre = nuevo.nombre ?? null;
+    deposito.telefono = nuevo.telefono1 ?? null;
+    deposito.telefono2 = nuevo.telefono2 ?? null;
+    deposito.direccion = nuevo.direccion ?? null;
+    await this.depositoRepo.save(deposito);
+
+    // Reemplazar el target correspondiente (si hay campaña viva) por el nuevo
+    // número, dejándolo listo para enviar.
+    const campaign = await this.campaignRepo.findOne({
+      where: {
+        programacionId,
+        estado: Not(In(['completed', 'cancelled'])),
+      },
+    });
+    const numeroNuevo = nuevo.telefono1
+      ? normalizeNumero(nuevo.telefono1)
+      : null;
+    if (campaign && numeroNuevo && numeroNuevo.length >= 8) {
+      let target = numeroViejo
+        ? await this.targetRepo.findOne({
+            where: { campaign: { id: campaign.id }, numero: numeroViejo },
+          })
+        : null;
+      if (target) {
+        target.numero = numeroNuevo;
+        target.nombreDeposito = nuevo.nombre ?? null;
+        target.estado = 'pending';
+        target.intentos = 0;
+        target.ultimoError = null;
+        target.instanceName = null;
+        target.chatwootConversationId = null;
+        target.respondido = false;
+        target.cotizacion = false;
+        target.enviadoEn = null;
+      } else {
+        // No había target para el viejo: crear uno nuevo para el reemplazo.
+        target = this.targetRepo.create({
+          campaign,
+          numero: numeroNuevo,
+          municipio: municipio.municipio,
+          departamento: municipio.departamento,
+          nombreDeposito: nuevo.nombre ?? null,
+          requerido: municipio.requerido,
+          plantillaId: campaign.plantillaIds[0],
+          estado: 'pending',
+        });
+      }
+      await this.targetRepo.save(target);
+
+      if (campaign.estado !== 'running') {
+        campaign.estado = 'running';
+        await this.campaignRepo.save(campaign);
+      }
+    }
+
+    return {
+      depositoId: deposito.depositoId,
+      idDeposito: deposito.idDeposito,
+      nombre: deposito.nombre,
+      telefono: deposito.telefono,
+      municipio: municipio.municipio,
+    };
+  }
+
+  /**
+   * Consulta la API de PriceControl un depósito aleatorio de un municipio
+   * (ciudad_id), excluyendo los ids indicados. Devuelve null si no hay o falla.
+   */
+  private async fetchDepositoAleatorio(
+    municipioId: number,
+    excludeIds: string[],
+  ): Promise<{
+    id: number;
+    IDdeposito?: string;
+    nombre?: string;
+    direccion?: string;
+    telefono1?: string;
+    telefono2?: string;
+  } | null> {
+    const base = this.config
+      .get<string>('PRICECONTROL_URL', 'https://pricecontrolv2.strategee.us')
+      .replace(/\/+$/, '');
+    const params = new URLSearchParams({ municipio_id: String(municipioId) });
+    if (excludeIds.length > 0) params.set('exclude_ids', excludeIds.join(','));
+    const url = `${base}/depositos/random_json?${params.toString()}`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        success?: boolean;
+        deposito?: {
+          id: number;
+          IDdeposito?: string;
+          nombre?: string;
+          direccion?: string;
+          telefono1?: string;
+          telefono2?: string;
+        } | null;
+      };
+      if (!data?.success || !data.deposito) return null;
+      return data.deposito;
+    } catch {
+      return null;
+    }
   }
 
   /**

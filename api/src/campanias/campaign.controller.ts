@@ -8,8 +8,10 @@ import {
   Post,
 } from '@nestjs/common';
 import { CampaignService } from './campaign.service.js';
+import { EnviarDepositoDto } from './dto/enviar-deposito.dto.js';
 import { EnviarMunicipioDto } from './dto/enviar-municipio.dto.js';
 import { MarcarCotizacionDto } from './dto/marcar-cotizacion.dto.js';
+import { RecargarDepositoDto } from './dto/recargar-deposito.dto.js';
 
 @Controller('campanias')
 export class CampaignController {
@@ -46,6 +48,24 @@ export class CampaignController {
     @Body() dto: EnviarMunicipioDto,
   ) {
     return this.campaignService.enviarMunicipio(progId, dto.municipio);
+  }
+
+  /** Envía (encola) un depósito individual por su teléfono. */
+  @Post('programacion/:progId/deposito')
+  enviarDeposito(
+    @Param('progId', ParseIntPipe) progId: number,
+    @Body() dto: EnviarDepositoDto,
+  ) {
+    return this.campaignService.enviarDeposito(progId, dto.telefono);
+  }
+
+  /** Recarga un depósito con otro aleatorio del mismo municipio. */
+  @Post('programacion/:progId/deposito/recargar')
+  recargarDeposito(
+    @Param('progId', ParseIntPipe) progId: number,
+    @Body() dto: RecargarDepositoDto,
+  ) {
+    return this.campaignService.recargarDeposito(progId, dto.depositoId);
   }
 
   /** Marca/desmarca la cotización de un destinatario (por número). */

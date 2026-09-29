@@ -2,6 +2,8 @@ import { Module, type OnModuleInit } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { EvolutionModule } from '../evolution/evolution.module.js';
 import { Plantilla } from '../plantillas/entities/plantilla.entity.js';
+import { Deposito } from '../programaciones/entities/deposito.entity.js';
+import { Municipio } from '../programaciones/entities/municipio.entity.js';
 import { Programacion } from '../programaciones/entities/programacion.entity.js';
 import { WarmupModule } from '../warmup/warmup.module.js';
 import { CampaignRunnerService } from './campaign-runner.service.js';
@@ -17,6 +19,8 @@ import { Campaign } from './entities/campaign.entity.js';
       CampaignTarget,
       Plantilla,
       Programacion,
+      Municipio,
+      Deposito,
     ]),
     EvolutionModule,
     WarmupModule,

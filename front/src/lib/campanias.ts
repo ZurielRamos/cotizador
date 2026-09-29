@@ -123,6 +123,47 @@ export async function enviarMunicipioCampania(
   return handle<Campaign>(res);
 }
 
+/** Envía (encola) un depósito individual por su teléfono. */
+export async function enviarDepositoCampania(
+  progId: number,
+  telefono: string,
+): Promise<Campaign> {
+  const res = await fetch(
+    `${API_URL}/campanias/programacion/${progId}/deposito`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telefono }),
+    },
+  );
+  return handle<Campaign>(res);
+}
+
+/** Depósito devuelto tras recargar (reemplazo por otro del mismo municipio). */
+export type DepositoRecargado = {
+  depositoId: string;
+  idDeposito: string | null;
+  nombre: string | null;
+  telefono: string | null;
+  municipio: string;
+};
+
+/** Recarga un depósito con otro aleatorio del mismo municipio (lo reemplaza). */
+export async function recargarDepositoCampania(
+  progId: number,
+  depositoId: string,
+): Promise<DepositoRecargado> {
+  const res = await fetch(
+    `${API_URL}/campanias/programacion/${progId}/deposito/recargar`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ depositoId }),
+    },
+  );
+  return handle<DepositoRecargado>(res);
+}
+
 /** Marca/desmarca la cotización de un destinatario (por número). */
 export async function marcarCotizacion(
   progId: number,
